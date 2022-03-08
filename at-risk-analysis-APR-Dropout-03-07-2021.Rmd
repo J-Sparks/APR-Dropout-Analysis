@@ -1,0 +1,587 @@
+---
+title: "At-risk-APR-Dropout-Anlaysis"
+author: "Jay Kim"
+date: "3/7/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ 
+### Data Cleaning
+
+```{r}
+
+# import data set
+library(tidyverse)
+library(readr)
+stu_enroll <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Data 202201/Updated 1-31-22/STU_ENROLLMENT.csv") %>% filter(Stu_DEMO_DATA_SOURCE == "SIF") %>% 
+    group_by(Stu_UWFID) %>% arrange(Stu_DEMO_TIME_FRAME)
+crs_inst_up <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Data 202201/Updated 1-31-22/COURSE_STUDENT_INSTRUCTION.csv") 
+crs.all <- crs_inst_up %>% filter(Course_DEMO_TIME_FRAME >= 201708) %>% filter(Course_CrsNumber<5000) %>% 
+    filter(Course_CrsDepartmentCode =="MAT") #202001
+max(crs.all$Course_DEMO_TIME_FRAME)
+
+ftic.all <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/MAJOR SWITCH/sankey_new_data_2015to2021.csv") %>% 
+    filter(Fall_ID ==1) %>% filter(Cohort >= 2017 ) %>%
+    mutate(GPA_HIGHSCHOOL = ifelse(GPA_HIGHSCHOOL == 0, NA, GPA_HIGHSCHOOL)) %>% 
+    mutate(Prior_hrs = cut(Stu_TotalUniversityHours, breaks=c(-1, 0.99,5.99,29.99,59.99,105 ),label=c("None","[1,6)","[6,30)","[30,60)","60+"))) %>% 
+    relocate(Prior_hrs, .after =Stu_TotalUniversityHours ) %>% 
+    select(-ENTRY_COLLEGE,  -contains("deg")) %>% arrange(GPA_HIGHSCHOOL)
+ftic.all[ftic.all$Stu_UWFID =="970312603",]
+addmargins(table(ftic.all$Cohort, ftic.all$Prior_hrs)) #5400
+colSums(is.na(ftic.all))
+# ftic.all[ftic.all$Stu_UWFID=="970552562",] #2021 cohort
+# ftic.all[ftic.all$Stu_UWFID=="970247054",] #2016 cohort
+ftic.all[ftic.all$Stu_UWFID=="970375780",] #2016 cohort
+crs.all <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/MAJOR SWITCH/DB_crs_grade_FTIC1521V1.csv")  %>% 
+    filter(DEPT_ID_CRS =="MAT")
+# crs.all[crs.all$UWFID=="970552562",]
+# crs.all[crs.all$UWFID=="970247054",]
+
+#earned hours
+Passed.Hous.by.term.all <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/MAJOR SWITCH/DB_crs_grade_FTIC1521V1.csv") %>% 
+        filter(    (Cohort == 2015 & crs_DEMO_TIME == 201508)|
+               (Cohort == 2016 & crs_DEMO_TIME == 201608)|
+               (Cohort == 2017 & crs_DEMO_TIME == 201708)|
+               (Cohort == 2018 & crs_DEMO_TIME == 201808)|
+               (Cohort == 2019 & crs_DEMO_TIME == 201908)|
+               (Cohort == 2020 & crs_DEMO_TIME == 202008)|
+               (Cohort == 2021 & crs_DEMO_TIME == 202108)
+               )
+Passed.Hous.by.term.all[Passed.Hous.by.term.all$UWFID=="970501820",]
+Earned_Hours <- Passed.Hous.by.term.all %>% group_by(UWFID, CRS_PASS) %>% 
+     dplyr::summarise(Earned_Hrs = sum(STU_SECTN_CRED)) %>% 
+    pivot_wider(names_from = CRS_PASS, values_from = Earned_Hrs )  %>% replace(is.na(.), 0)
+colnames(Earned_Hours) <- c("UWFID", "Term1.DWFHours","Term1.EaredHours")
+Earned_Hours[Earned_Hours$UWFID=="970316566",] 
+addmargins(table(Passed.Hous.by.term.all$Cohort, Passed.Hous.by.term.all$crs_DEMO_TIME))
+```
+
+
+### add for HS name and PROG APR
+
+```{r}
+
+APR_data.apr <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/_DataShaping/APR_202108.csv") %>% 
+    select("Stu_UWFID"=UNIV_ROW_ID, APPLICANT_TIER,"Cohort"= COHORT_YEAR, APR) %>% filter(Cohort >= 20172018)
+
+ft.istterm <- merge(APR_data.apr, stu_enroll, by="Stu_UWFID", all.x = T) %>% 
+    filter(Stu_AdmissionRecentTypeCode=="B" & Stu_LoadBOGFTPT == "Full Time") %>% 
+    group_by(Stu_UWFID) %>% arrange(Stu_DEMO_TIME_FRAME) %>% 
+    filter(    (Cohort == 20152016 & Stu_DEMO_TIME_FRAME == 201508)|
+               (Cohort == 20162017 & Stu_DEMO_TIME_FRAME == 201608)|
+               (Cohort == 20172018 & Stu_DEMO_TIME_FRAME == 201708)|
+               (Cohort == 20182019 & Stu_DEMO_TIME_FRAME == 201808)|
+               (Cohort == 20192020 & Stu_DEMO_TIME_FRAME == 201908)|
+               (Cohort == 20202021 & Stu_DEMO_TIME_FRAME == 202008)|
+               (Cohort == 20212022 & Stu_DEMO_TIME_FRAME == 202108)
+               ) %>% select(1:4,Stu_ProgramCIPCode,Stu_ProgramCIPDesc)
+
+cip_apr <- ft.istterm %>% filter(!is.na(APR)) %>% 
+    group_by(Stu_ProgramCIPCode, APR) %>% summarise(Count=n()) %>% 
+    pivot_wider(names_from = APR, values_from = Count) %>% replace(is.na(.), 0) %>% 
+    mutate(CIP_APR= round(Yes/sum(Yes+No),2)) %>% arrange(CIP_APR)
+# ftic.all and cip apr
+ftic.all.cip <- merge(ftic.all,  cip_apr[,c(1,4)], by="Stu_ProgramCIPCode",all.x = T) %>% 
+    relocate(CIP_APR, .after = Stu_ProgramCIPCode) %>% arrange(-Cohort)
+colSums(is.na(ftic.all.cip))
+#application data
+library(readr)
+HS_CEEB_APR <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/ACCEPTANCE RATE/app_2017_to_2022_cal_tier_allV0.csv") %>% select("Stu_UWFID"=UWFID, HS_CEEB ,HS_NAME)
+HS_CEEB_APR2 <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/2021 Active Projects/08/ACCEPTANCE RATE/app_2017_to_2022_cal_tier_allV0.csv") %>% select("Stu_UWFID"=UWFID, HS_CEEB ,HS_NAME)
+
+ftic.all.cip.hs <- merge( HS_CEEB_APR2, ftic.all.cip,  by="Stu_UWFID", all.y = T)
+colSums(is.na(ftic.all.cip.hs))
+# raw hs apr
+ftic.all.hs <- merge(APR_data.apr, HS_CEEB_APR, by="Stu_UWFID", all.x = T ) %>% filter(!duplicated(Stu_UWFID)) %>% filter(!is.na(APR)) %>% 
+    group_by(HS_CEEB, APR) %>% summarise(Count=n()) %>% 
+    pivot_wider(names_from = APR, values_from = Count) %>% mutate(Yes = ifelse(is.na(Yes), 0, Yes), No = ifelse(is.na(No), 0, No)) %>%  
+    mutate( TotalHS=sum(Yes, No)) %>% 
+    mutate(AVE_HS_APR= round(Yes/sum(Yes+No),2)) %>% arrange(AVE_HS_APR)    #min 0.25
+#previous hs apr
+library(readr)
+HS_APR20172020_V1 <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/_HIGH_PRIORITY_PROJECTS/APR/APR FTIC2021/HS_APR20172020_V1.csv")
+hist(HS_APR20172020_V1$AVE_HS_APR) 
+
+colSums(is.na(ftic.all.hs))
+
+# single_new hs apr
+new_hsapr <- ftic.all.hs %>% filter(TotalHS ==1) 
+addmargins(table(yes=new_hsapr$Yes, no=new_hsapr$No)) #433/553  0.7830018
+
+#merge ave hs par
+ftic.all.cip.hs.apr <- merge(ftic.all.cip.hs,   HS_APR20172020_V1[,c(1,11)], by="HS_CEEB", all.x = T ) %>% select(2,1,3,34,4:33) %>% 
+    mutate(AVE_HS_APR   = ifelse(is.na(AVE_HS_APR  ), 0.78, AVE_HS_APR )) %>% 
+    mutate(CIP_APR = ifelse(is.na(CIP_APR), 0.80, CIP_APR))
+    
+colSums(is.na(ftic.all.cip.hs.apr))  
+
+write.csv(ftic.all.cip.hs.apr, "ftic.all.cip.hs.apr.csv", row.names = F)
+```
+
+```{r first gen}
+ftic.all.cip.hs.apr <- read_csv("ftic.all.cip.hs.apr.csv")
+
+ft.gen <- merge(APR_data.apr, stu_enroll, by="Stu_UWFID", all.x = T) %>% 
+    filter(Stu_AdmissionRecentTypeCode=="B" & Stu_LoadBOGFTPT == "Full Time") %>% 
+    group_by(Stu_UWFID) %>% arrange(Stu_DEMO_TIME_FRAME) %>% 
+    filter(    (Cohort == 20152016 & Stu_DEMO_TIME_FRAME == 201508)|
+               (Cohort == 20162017 & Stu_DEMO_TIME_FRAME == 201608)|
+               (Cohort == 20172018 & Stu_DEMO_TIME_FRAME == 201708)|
+               (Cohort == 20182019 & Stu_DEMO_TIME_FRAME == 201808)|
+               (Cohort == 20192020 & Stu_DEMO_TIME_FRAME == 201908)|
+               (Cohort == 20202021 & Stu_DEMO_TIME_FRAME == 202008)|
+               (Cohort == 20212022 & Stu_DEMO_TIME_FRAME == 202108)
+               ) %>% select(1:2,Stu_StrategicEmphasis,Stu_FirstGenInd)	
+colSums(is.na(ft.gen)) 
+table(ft.gen$Stu_FirstGenInd)
+
+ftic.all.cip.hs.apr.gen.emp <- merge(ftic.all.cip.hs.apr,ft.gen, by="Stu_UWFID", all.x = T )
+colnames(ftic.all.cip.hs.apr.gen.emp)
+addmargins(table(ftic.all.cip.hs.apr.gen.emp$Cohort))
+addmargins(table(ftic.all.cip.hs.apr.gen.emp$Cohort, ftic.all.cip.hs.apr.gen.emp$APR))
+
+# dropout
+ft.drop <- merge(APR_data.apr, stu_enroll, by="Stu_UWFID", all.x = T) %>% 
+    #filter(Stu_AdmissionRecentTypeCode=="B" & Stu_LoadBOGFTPT == "Full Time") %>% 
+    group_by(Stu_UWFID) %>% arrange(Stu_DEMO_TIME_FRAME) %>% 
+    filter(    (Cohort == 20152016 & Stu_DEMO_TIME_FRAME == 201608)|
+               (Cohort == 20162017 & Stu_DEMO_TIME_FRAME == 201708)|
+               (Cohort == 20172018 & Stu_DEMO_TIME_FRAME == 201808)|
+               (Cohort == 20182019 & Stu_DEMO_TIME_FRAME == 201908)|
+               (Cohort == 20192020 & Stu_DEMO_TIME_FRAME == 202008)|
+               (Cohort == 20202021 & Stu_DEMO_TIME_FRAME == 202108)|
+               (Cohort == 20212022 & Stu_DEMO_TIME_FRAME == 202208)
+               ) %>% select(1, "Fall2Term"=Stu_DEMO_TIME_FRAME,"CIP_2ndFall"=Stu_ProgramCIPCode)
+hist(ftic.all.cip.hs.apr.gen.emp.drop$AVE_HS_APR)
+
+ftic.all.cip.hs.apr.gen.emp.drop <- merge(ftic.all.cip.hs.apr.gen.emp, ft.drop, by="Stu_UWFID" , all.x = T)
+write.csv(ftic.all.cip.hs.apr.gen.emp.drop,  "ftic.all.cip.hs.apr.gen.emp.drop.csv", row.names = F)
+
+```
+
+```{r read for math courses and earned hours}
+ftic.all.cip.hs.apr.gen.emp.drop <- read_csv("ftic.all.cip.hs.apr.gen.emp.drop.csv") %>% 
+    mutate(Term1 = ifelse(Cohort == 2017, rep(201708),
+                          ifelse(Cohort ==2018, rep(201808),
+                                 ifelse(Cohort == 2019, rep(201908),
+                                        ifelse(Cohort == 2020, rep(202008),
+                                               ifelse(Cohort == 2021, rep(202108),999999)))))) 
+addmargins(table(ftic.all.cip.hs.apr.gen.emp.drop$Cohort, ftic.all.cip.hs.apr.gen.emp.drop$Term1))
+# crs.all.trim <- crs.all %>% select(Course_StuUWFID, Course_DEMO_TIME_FRAME, Course_CrsTitle,Course_CrsCombined,Course_CrsGradeAwarded)
+# addmargins(table(crs.all.trim$Course_DEMO_TIME_FRAME, crs.all.trim$Course_CrsGradeAwarded))
+
+
+```
+
+```{r}
+
+
+ftic.enc.crs <-  merge(ftic.all.cip.hs.apr.gen.emp.drop, crs.all[,c(1,9,20,22,23)], by.x=c("Stu_UWFID","Term1"), by.y=c("UWFID","crs_DEMO_TIME"), all.x = T)   %>% 
+    filter(     (Cohort == 2017 & Term1 ==201708) |
+                (Cohort == 2018 & Term1 ==201808) |
+                (Cohort == 2019 & Term1 ==201908) |
+                (Cohort == 2020 & Term1 ==202008) |
+                (Cohort == 2021 & Term1 ==202108)    
+                ) %>% 
+    group_by(Stu_UWFID) %>%  mutate(Number_mathcrs= row_number()) %>% 
+    mutate(Math_grade_id = ifelse(is.na(GRADE_AWARDED), "NotAttempted",GRADE_AWARDED ),
+           Math_name_id = ifelse(is.na(CRSE_NAME), "NotAttempted",CRSE_NAME ))
+addmargins(table(ftic.enc.crs$Cohort, ftic.enc.crs$APR)) # need to group the math courses
+addmargins(table(ftic.enc.crs$Math_name_id, ftic.enc.crs$Math_grade_id)) 
+colSums(is.na(ftic.enc.crs))
+ 
+write.csv(ftic.enc.crs, "ftic.enc.crs.math.csv", row.names = F)
+```
+
+### Additional factors
+
+```{r}
+library(readxl)
+CSE_Analysis_Full_Data_2020_Cohort_Update_01_28 <- read_excel("G:/Shared drives/HMCSE-PAM Lab/FTIC 2021 Data/CSE Analysis Full Data 2020 Cohort_Update 01-28.xlsx")
+table(CSE_Analysis_Full_Data_2020_Cohort_Update_01_28$COHORT_YEAR, CSE_Analysis_Full_Data_2020_Cohort_Update_01_28$STATE_GROUP)
+library(readr)
+CSE_ALL_ENR_up2020 <- read_csv("G:/Shared drives/HMCSE-PAM Lab/Jay's Space/DATA/CSE_ALL_ENR_up2020.csv")
+addmargins(table(CSE_ALL_ENR_up2020$COHORT_YEAR, CSE_ALL_ENR_up2020$COUNTY_GROUP))
+
+``` 
+
+```{r}
+addmargins(table(APR_data.apr$Cohort))
+FL <- c("T","F")
+NonFL <- c("N")
+Non_USA <- c("A","R","E")
+tri.county <- c("ESCA","OKAL","SANT")
+add.vari.enth.coutn <- merge(APR_data.apr, stu_enroll, by="Stu_UWFID", all.x = T) %>% 
+    group_by(Stu_UWFID) %>% arrange(Stu_DEMO_TIME_FRAME) %>% 
+    filter(    (Cohort == 20152016 & Stu_DEMO_TIME_FRAME == 201508)|
+               (Cohort == 20162017 & Stu_DEMO_TIME_FRAME == 201608)|
+               (Cohort == 20172018 & Stu_DEMO_TIME_FRAME == 201708)|
+               (Cohort == 20182019 & Stu_DEMO_TIME_FRAME == 201808)|
+               (Cohort == 20192020 & Stu_DEMO_TIME_FRAME == 201908)|
+               (Cohort == 20202021 & Stu_DEMO_TIME_FRAME == 202008)|
+               (Cohort == 20212022 & Stu_DEMO_TIME_FRAME == 202108)
+               ) %>% select(1:4, contains("eth"), contains("state"), contains("county"),contains("residen")) %>% 
+    mutate(StateCode = ifelse(Stu_FeeResidencyCode %in% FL, "FL",
+                              ifelse( Stu_FeeResidencyCode == "N" & Stu_StateCode == "AL", "AL",
+                                      ifelse(Stu_FeeResidencyCode == "N" & Stu_StateCode != "AL",  "Non-FL/AL",
+                                     ifelse(Stu_FeeResidencyCode %in% Non_USA , "Non-USA","Others"))))) %>% 
+    mutate(County_Group = ifelse(Stu_CountyCode %in% tri.county & StateCode == "FL", "Tri-County",
+                                 ifelse(StateCode == "AL", "AL-County",
+                                        ifelse(StateCode == "Non-FL/AL", "Non-FL/AL-County",
+                                               ifelse(StateCode == "FL" & !Stu_CountyCode %in% tri.county, "Other-FL-County", "Others"))))) %>% 
+    mutate(EthnicityCdoe = ifelse(Stu_EthnicityCode == 5, "African American",
+                                  ifelse(Stu_EthnicityCode == 2, "Hispanic",
+                                  ifelse(Stu_EthnicityCode == 8, "Two or More" ,
+                                  ifelse(Stu_EthnicityCode == 7, "White" , "Others"))))) %>% 
+    select(1,5:16)
+    
+
+addmargins(table(add.vari.enth.coutn$Stu_Ethnicity, add.vari.enth.coutn$EthnicityCdoe))
+```
+
+
+### Descriptive Statistics
+
+```{r warning=FALSE}
+library(readr)
+mydata <- read_csv("ftic.enc.crs.math.csv") %>% 
+    group_by(Stu_UWFID) %>% mutate(Num_Mathcrs = row_number()) %>% 
+         mutate(GPA_HIGHSCHOOL = ifelse(is.na(GPA_HIGHSCHOOL), 3.88, GPA_HIGHSCHOOL)) %>%
+         mutate(GPA_HIGHSCHOOL = ifelse(GPA_HIGHSCHOOL== 9.8, 2.88, GPA_HIGHSCHOOL)) %>% #imputed HS GPA outliers
+        mutate(AVE_HS_APR = ifelse(AVE_HS_APR ==0, 0.25, AVE_HS_APR)) %>% 
+        mutate(NEW_HSGPAAPR = log(GPA_HIGHSCHOOL + AVE_HS_APR), NEW_HSGPAPROGAPR = GPA_HIGHSCHOOL*CIP_APR  ) %>% 
+        mutate(TermGPA = ifelse(TermGPA == 0, NA, TermGPA))
+
+# mixed with last file
+mydata.earend <- merge(mydata,  Earned_Hours, by.x="Stu_UWFID", by.y= "UWFID", all.x = T) #5427
+mydata.state.county <- merge(mydata.earend, add.vari.enth.coutn, by="Stu_UWFID", all.x = T) #5427
+
+
+colSums(is.na(mydata))
+hist(mydata$AVE_HS_APR)
+#summary(mydata)
+#nas <- mydata[which(is.na(mydata$Course_CrsGradeAwarded)),]
+#Hmisc::describe(mydata)
+addmargins(table(mydata$Cohort, mydata$Math_grade_id))
+addmargins(table(mydata$Cohort, mydata$Num_Mathcrs))
+
+mydata.earend[mydata.earend$Stu_UWFID=="970501820",]
+
+library(caret)
+library(tidyverse)  # data manipulation and visualization
+library(modelr)     # provides easy pipeline modeling functions
+library(broom)      # helps to tidy up model outpu
+library(readr)
+apr_varis <- c("APR", "Stu_CollegeCode","AVE_HS_APR","CIP_APR","GPA_HIGHSCHOOL","Stu_Gender","Prior_hrs",
+               "APPLICANT_TIER","Math_grade_id","Math_name_id","CRS_PASS","TermGPA","Term1.DWFHours" ,
+               "Term1.EaredHours" ,"EthnicityCdoe","County_Group","StateCode",  "Cohort" )
+library(gtsummary)
+summary_apr <- mydata.state.county[,-1] %>% dplyr::select(apr_varis) %>% filter(Cohort != 2021) %>% 
+     mutate(APR = ifelse(APR == "Yes", 1,0))  %>% 
+    tbl_summary( by = APR,
+                statistic = all_continuous() ~ "{mean} ({sd}) {min} {max}",
+                missing = "no"
+                            ) %>% add_n() %>%  add_p()
+summary_apr
+
+```
+
+### Pre-college factors
+
+```{r}
+pre.coll.fact <- c("APR", "Stu_CollegeCode","AVE_HS_APR","CIP_APR", "Stu_Gender","Prior_hrs","GPA_HIGHSCHOOL")
+apr.varis.ft <- mydata %>% 
+    select(pre.coll.fact, Cohort) %>% 
+     mutate(across(where(is.character), as.factor))
+
+#colnames(apr.varis.ft) <- c("APR","Entery_college","HSAPR","CIPAPR", "GENDER","PRIOR_HRS","Cohort","NEW_HSGPAAPR","NEW_HSGPAPROGAPR" )
+colnames(apr.varis.ft)
+glimpse(apr.varis.ft)
+
+
+### Correlation Matrix
+
+
+# Correlation Matrix
+library(corrgram)
+library(corrplot)
+num.vari.cor.apr <- apr.varis.ft[c(4,5,8)] %>% na.omit()
+cor.vari.plot <- cor(num.vari.cor.apr)
+cor.vari.plot
+corrplot(cor.vari.plot, method = "pie" )
+
+```
+
+
+```{r}
+### Data Partitions
+
+# each cohort
+ft2017 <- apr.varis.ft[,-1] %>% filter(Cohort == 2017 ) %>% select(-Cohort)
+addmargins(table(ft2017$APR, ft2017$Prior_hrs))
+ft2018 <- apr.varis.ft[,-1] %>% filter(Cohort == 2018 ) %>% select(-Cohort)
+addmargins(table(ft2018$APR,ft2018$Prior_hrs))
+ft2019 <- apr.varis.ft[,-1] %>% filter(Cohort == 2019 ) %>% select(-Cohort)
+addmargins(table(ft2019$APR,ft2019$Prior_hrs))
+ft2020 <- apr.varis.ft[,-1] %>% filter(Cohort == 2020 ) %>% select(-Cohort)
+addmargins(table(ft2020$APR,ft2020$Prior_hrs))
+ft2021 <- apr.varis.ft %>% filter(Cohort == 2021 ) %>% select(-Cohort)
+addmargins(table(ft2021$Prior_hrs))
+
+#data partition
+#2017
+ft2017dataIndex <- createDataPartition(ft2017$APR, p=0.7, list = FALSE)
+ft2017train <- ft2017[ft2017dataIndex,] # Training Set
+ft2017test <- ft2017[-ft2017dataIndex,] # Test Set
+#2018
+ft2018dataIndex <- createDataPartition(ft2018$APR, p=0.7, list = FALSE)
+ft2018train <- ft2017[ft2018dataIndex,] # Training Set
+ft2018test <- ft2017[-ft2018dataIndex,] # Test Set
+#2019
+ft2019dataIndex <- createDataPartition(ft2019$APR, p=0.7, list = FALSE)
+ft2019train <- ft2017[ft2019dataIndex,] # Training Set
+ft2019test <- ft2017[-ft2019dataIndex,] # Test Set
+#2020
+ft2020dataIndex <- createDataPartition(ft2020$APR, p=0.7, list = FALSE)
+ft2020train <- ft2020[ft2020dataIndex,] # Training Set
+ft2020test <- ft2020[-ft2020dataIndex,] # Test Set
+```
+
+### Pre-college factors
+
+
+```{r pre-college factors}
+
+# Build model using all factors and labels
+#train set
+set.seed(111)
+apr.glm.2017 <- glm(APR ~ ., data = ft2017train, family="binomial")
+set.seed(222)
+apr.glm.2018 <- glm(APR ~ ., data = ft2018train, family="binomial")
+set.seed(333)
+apr.glm.2019 <- glm(APR ~ ., data = ft2019train, family="binomial")
+set.seed(444)
+apr.glm.2020 <- glm(APR ~ ., data = ft2020train, family="binomial")
+# test set
+acc_f <- function(x){
+    round(sum(diag(x))/sum(x),4)
+}
+#ft2017
+p_2017_train <- predict(apr.glm.2017, ft2017train, type="response")
+tab_2017_train <- table(Predicted=ifelse( p_2017_train > 0.5, 1,0), Actural=ft2017train$APR)
+p_2017_test <- predict(apr.glm.2017, ft2017test, type="response")
+tab_2017_test <- table(Predicted=ifelse( p_2017_test > 0.5, 1,0), Actural=ft2017test$APR)
+#ft2018
+p_2018_train <- predict(apr.glm.2018, ft2018train, type="response")
+tab_2018_train <- table(Predicted=ifelse(  p_2018_train > 0.5, 1,0), Actural=ft2018train$APR)
+p_2018_test <- predict(apr.glm.2018, ft2018test, type="response")
+tab_2018_test <- table(Predicted=ifelse( p_2018_test > 0.5, 1,0), Actural=ft2018test$APR)
+#ft2019
+p_2019_train <- predict(apr.glm.2019, ft2019train, type="response")
+tab_2019_train <- table(Predicted=ifelse( p_2019_train > 0.5, 1,0), Actural=ft2019train$APR)
+p_2019_test <- predict(apr.glm.2019, ft2019test, type="response")
+tab_2019_test <- table(Predicted=ifelse( p_2019_test > 0.5, 1,0), Actural=ft2019test$APR)
+#ft2020
+p_2020_train <- predict(apr.glm.2020, ft2020train, type="response")
+tab_2020_train <- table(Predicted=ifelse( p_2020_train > 0.5, 1,0), Actural=ft2020train$APR)
+p_2020_test <- predict(apr.glm.2020, ft2020test, type="response")
+tab_2020_test <- table(Predicted=ifelse( p_2020_test > 0.5, 1,0), Actural=ft2020test$APR)
+
+#ACCURACY
+ACC_DF <- NULL
+ACC_DF$Cohort <- c(2017:2020)
+ACC_DF$ACC_TRAIN <- c(acc_f(tab_2017_train),acc_f(tab_2018_train),acc_f(tab_2019_train),acc_f(tab_2020_train))
+ACC_DF$ACC_TEST <- c(acc_f(tab_2017_test),acc_f(tab_2018_test),acc_f(tab_2019_test),acc_f(tab_2020_test))
+# choose higher accuracy model
+ACC_DF
+ 
+
+```
+
+### Prediction using 1st term performance
+
+```{r}
+apr_varis.1stterm <- c("APR", "Stu_CollegeCode","AVE_HS_APR","CIP_APR", "Stu_Gender","Prior_hrs","GPA_HIGHSCHOOL","CUMTGPUWF","County_Group","EthnicityCdoe","Term1.EaredHours","Cohort")
+apr_1st.term.data <- mydata.state.county[,-1] %>% 
+    select(apr_varis.1stterm) %>%  mutate(across(where(is.character), as.factor))
+#glimpse(apr_1st.term.data)
+#correlation matrix
+num.vari.cor.apr.1st <- apr_1st.term.data[c(3,4,7,8,11)] %>% na.omit()
+cor.vari.1st.plot <- cor(num.vari.cor.apr.1st)
+cor.vari.1st.plot
+corrplot(cor.vari.1st.plot, method = "pie" )
+#filter ftic2021
+not.ft2021.1stterm <- apr_1st.term.data %>% filter(Cohort != 2021 ) %>% select(-Cohort)
+ft2021.1stterm <- apr_1st.term.data %>% filter(Cohort == 2021 ) %>% select(-Cohort)
+#data partitions
+ft.1stdataIndex <- createDataPartition(not.ft2021.1stterm$APR, p=0.7, list = FALSE)
+ft.1st.train <- not.ft2021.1stterm[ft.1stdataIndex,] # Training Set
+ft.1st.test <- not.ft2021.1stterm[-ft.1stdataIndex,] # Test Set
+#modeling
+set.seed(111)
+apr.glm.1st <- glm(APR ~ ., data = ft.1st.train, family="binomial")
+summary(apr.glm.1st)
+#prediction
+p_apr.1st._train <- predict(apr.glm.1st, ft.1st.train, type="response")
+tab.1st.train <- table(Predicted=ifelse( p_apr.1st._train > 0.5, 1,0), Actural=ft.1st.train$APR);tab.1st.train
+p_apr.1st.test <- predict(apr.glm.1st, ft.1st.test, type="response")
+tab.1st.test <- table(Predicted=ifelse( p_apr.1st.test > 0.5, 1,0), Actural=ft.1st.test$APR);tab.1st.test
+acc_f(tab.1st.train)
+acc_f(tab.1st.test)
+#vari important
+vari_imp.1st <- knitr::kable(caret::varImp(apr.glm.1st))
+vari_imp.1st
+
+```
+
+### Prediction for Dropouts
+
+ 
+```{r math course coding}
+AA <- c("A","A-")
+BB <- c("B+","B","B-")
+CC <- c("C-","C","C+")
+Failed <- c("D","D+","F","NF")
+math_level1 <- c("MAC1105","MAC1105C")
+math_level2 <- c("MAC1114","MAC1140")
+math_level3 <- c("MAC1147")
+math_level4 <- c("MAC2311","MAC2312","MAC2313","MAP2302")
+stat_level <- c("STA2303")
+MGF_level <- c("MGF1106","MGF1107")
+Mathabove3000 <- c("MHF3202","STA4173","MAS3105","MHF3202","STA4321")
+
+
+mydata.state.county.math <- mydata.state.county %>% 
+    mutate(Math_Grade_Range = 
+                            ifelse(Math_grade_id %in% AA,  "A_range",
+                            ifelse(Math_grade_id %in% BB,  "B_range",
+                            ifelse(Math_grade_id %in% CC,  "C_range",
+                            ifelse(Math_grade_id %in% Failed,  "Failed",
+                            ifelse(Math_grade_id == "NotAttempted",  "NotAttempted", "Withdrawn"))))))   %>% 
+    mutate(MathCRS.Level =ifelse(Math_name_id %in% math_level4,  "Calculus level",
+                          ifelse(Math_name_id %in% Mathabove3000, "Above3000 level" ,
+                                 ifelse(Math_name_id %in% MGF_level, "MGF1000 level", 
+                                        ifelse(Math_name_id =="NotAttempted", "Notattempted", Math_name_id)))))
+    
+addmargins(table(mydata.state.county.math$Cohort, mydata.state.county.math$Math_Grade_Range))
+
+```
+
+
+```{r dropouts using naive bayes }
+library(rsample)  # data splitting 
+library(dplyr)    # data transformation
+library(ggplot2)  # data visualization
+library(caret)    # implementing with caret
+ 
+apr_varis.1stterm.dropouts <- c("APR", "Stu_CollegeCode","AVE_HS_APR","CIP_APR", "Stu_Gender","Prior_hrs","GPA_HIGHSCHOOL","CUMTGPUWF","County_Group","EthnicityCdoe","Term1.EaredHours", "Math_Grade_Range","MathCRS.Level",  "Cohort")
+apr_1st.term.data.math  <- mydata.state.county.math[,-1] %>% 
+    mutate(Dropout = ifelse(is.na(CIP_2ndFall), "Dropped","Stayed")) %>% 
+    select(apr_varis.1stterm.dropouts,Dropout ) %>%  mutate(across(where(is.character), as.factor)) %>% select(-APR)  
+#glimpse(apr_1st.term.data)
+addmargins(table(apr_1st.term.data.math$Dropout, apr_1st.term.data.math$Cohort))
+
+#filter ftic2021
+not.ft2021.1stterm.math <- apr_1st.term.data.math %>% filter(Cohort != 2021 ) %>% select(-Cohort)
+ft2021.1stterm.math <- apr_1st.term.data.math %>% filter(Cohort == 2021 ) %>% select(-Cohort)
+#data partitions
+ft.1stdataIndex.math <- createDataPartition(not.ft2021.1stterm.math$Dropout, p=0.7, list = FALSE)
+ft.1st.train.math <- not.ft2021.1stterm.math[ft.1stdataIndex.math,] # Training Set
+ft.1st.test.math <- not.ft2021.1stterm.math[-ft.1stdataIndex.math,] # Test Set
+#modeling
+library(naivebayes)
+dropout.1stterm <- naive_bayes(Dropout~., data = ft.1st.train.math, usekernel = TRUE)
+dropout.1stterm.1 <- naive_bayes(Dropout~., data = ft.1st.test.math, usekernel = TRUE)
+#prediction
+p.drop.train <- predict(dropout.1stterm, ft.1st.train.math, type="prob")
+tab.drop.train <- table(Predicted=predict(dropout.1stterm), Actural=ft.1st.train.math$Dropout);tab.drop.train
+p.drop.test <- predict(dropout.1stterm.1, ft.1st.test.math, type="prob")
+tab.drop.test <- table(Predicted= predict(dropout.1stterm.1), Actural=ft.1st.test.math$Dropout);tab.drop.test
+acc_f(tab.drop.train)
+acc_f(tab.drop.test)
+```
+
+### Tables
+
+```{r}
+tables(dropout.1stterm)
+```
+
+
+
+```{r  ftic 2021 }
+
+###output ftic 2021
+#ft2021
+PROB_APR_2021 <- predict(apr.glm.2019,  mydata[mydata$Cohort==2021,], type="response")
+PROB_APR_1stTERM_2021 <- predict(apr.glm.1st, mydata.state.county[mydata.state.county$Cohort ==2021,], type="response")
+output_ftic2021 <- cbind(PROB_APR_2021, mydata[mydata$Cohort==2021,])
+output_ftic2021.1st <- cbind(PROB_APR_1stTERM_2021, mydata.state.county[mydata.state.county$Cohort==2021,])
+output_ftic2021.pre.1st <- cbind(PROB_APR_2021, output_ftic2021.1st)
+PROB_DROPOUT <- predict(dropout.1stterm, ft2021.1stterm.math, type="prob") %>% data.frame()
+PROB_DROPOUT_1 <- round(PROB_DROPOUT, 4)
+output_ftic2021.pre.1st.drop <- cbind(PROB_DROPOUT_1, output_ftic2021.pre.1st) %>% 
+    relocate(Term1.DWFHours, .after =PROB_APR_1stTERM_2021 ) %>% 
+    relocate(TermGPA, .after = Term1.DWFHours ) %>% 
+    relocate(Term1.EaredHours, .after = TermGPA)
+
+head(output_ftic2021.pre.1st.drop, 20)
+write.csv(output_ftic2021.pre.1st.drop, "output_ftic2021.pre.1st.drop.csv",row.names = F)
+
+
+```
+
+### Results
+
+```{r}
+ 
+summary(apr.glm.2017)
+summary(apr.glm.2018)
+summary(apr.glm.2019)
+summary(apr.glm.2020)
+```
+
+
+```{r}
+exp(coef(apr.glm.2017))
+P_value <- broom::tidy(apr.glm.2017)
+# confnt
+confint(apr.glm.2020, level = 0.95)
+#coefficient
+coef1 <- exp(coef(apr.glm.2017))
+coef_table <- knitr::kable(coef1)
+coef_table
+vari_imp <- knitr::kable(caret::varImp(apr.glm.2017))
+vari_imp
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
